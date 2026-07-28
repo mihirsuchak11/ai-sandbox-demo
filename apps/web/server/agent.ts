@@ -192,23 +192,26 @@ async function runMock(
   };
 
   try {
-    // Diagnostics: prove identity/creds are in place before we rely on them.
-    await run("sh", ["-c", "echo HOME=$HOME; whoami; git config --list --show-origin 2>&1 | head -30"]);
-
     await mustPass("git", ["clone", `https://github.com/${owner}/${repo}`, "work"], ".");
-    await mustPass("git", ["checkout", "-b", branch], "work");
+
+    // Resolve the repo's ABSOLUTE path and use it for every step. On Vercel,
+    // writeFiles and a cwd-less runCommand use a different base dir than a
+    // runCommand WITH a cwd — so a relative "work/…" file lands where git can't
+    // see it. Absolute paths remove that ambiguity on both backends.
+    const repoAbs = (await run("pwd", [], "work")).stdout.trim();
+
+    await mustPass("git", ["checkout", "-b", branch], repoAbs);
 
     const content = `# Sandbox run\n\nCreated at: ${new Date().toString()}\nBranch: ${branch}\n`;
-    await backend.writeFile(sandbox, `work/${file}`, content);
+    await backend.writeFile(sandbox, `${repoAbs}/${file}`, content);
     runs.push({ tool: "write_file", summary: `wrote ${file}`, output: content });
 
-    // Did the file actually land, and what does git see?
-    await run("ls", ["-la", "sandbox-runs"], "work");
-    await run("git", ["status", "--porcelain"], "work");
+    // Confirm the file landed where git will see it.
+    await run("git", ["status", "--porcelain"], repoAbs);
 
-    await mustPass("git", ["add", "-A"], "work");
-    await mustPass("git", ["commit", "-m", `Sandbox run ${stamp}`], "work");
-    await mustPass("git", ["push", "-u", "origin", branch], "work");
+    await mustPass("git", ["add", "-A"], repoAbs);
+    await mustPass("git", ["commit", "-m", `Sandbox run ${stamp}`], repoAbs);
+    await mustPass("git", ["push", "-u", "origin", branch], repoAbs);
 
     const base = await getDefaultBranch(gh.token, owner, repo);
     const url = await openPullRequest({
