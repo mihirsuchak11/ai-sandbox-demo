@@ -1,22 +1,40 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
-import Docker from "dockerode";
-import { resolveDockerSocketPath, SANDBOX_IMAGE } from "./config";
-import { DockerManager } from "./docker/DockerManager";
-import { VercelSandboxManager } from "./sandbox/VercelSandboxManager";
 import type { SandboxBackend, SandboxHandle } from "./sandbox/SandboxBackend";
 import type { ChatMessage, ToolRun, ChatResult } from "../shared/types";
 
-// Choose the sandbox backend once, from the environment.
-// SANDBOX_BACKEND=vercel  -> managed Firecracker microVMs on Vercel
-// (anything else)         -> your self-hosted Docker containers (default)
-const backend: SandboxBackend =
-  process.env.SANDBOX_BACKEND === "vercel"
-    ? new VercelSandboxManager()
-    : new DockerManager(new Docker({ socketPath: resolveDockerSocketPath() }), SANDBOX_IMAGE);
+/**
+ * Lazily build the sandbox backend on first use — NOT at module load.
+ *
+ * This matters on Vercel: `dockerode` pulls in native deps (ssh2, cpu-features)
+ * that crash the serverless function if loaded. By dynamic-importing the Docker
+ * backend only when SANDBOX_BACKEND !== "vercel", the Vercel path never touches
+ * dockerode at all.
+ */
+let backendPromise: Promise<SandboxBackend> | null = null;
 
-console.log(`🧰 Sandbox backend: ${process.env.SANDBOX_BACKEND === "vercel" ? "vercel" : "docker"}`);
+function getBackend(): Promise<SandboxBackend> {
+  if (!backendPromise) {
+    backendPromise = (async () => {
+      if (process.env.SANDBOX_BACKEND === "vercel") {
+        const { VercelSandboxManager } = await import("./sandbox/VercelSandboxManager");
+        console.log("🧰 Sandbox backend: vercel");
+        return new VercelSandboxManager();
+      }
+      // Docker path — only reached (and only imported) off Vercel.
+      const [{ default: Docker }, { DockerManager }, { resolveDockerSocketPath, SANDBOX_IMAGE }] =
+        await Promise.all([
+          import("dockerode"),
+          import("./docker/DockerManager"),
+          import("./config"),
+        ]);
+      console.log("🧰 Sandbox backend: docker");
+      return new DockerManager(new Docker({ socketPath: resolveDockerSocketPath() }), SANDBOX_IMAGE);
+    })();
+  }
+  return backendPromise;
+}
 
 const SYSTEM_PROMPT = `You are an AI code interpreter with access to a secure sandbox.
 
@@ -45,7 +63,11 @@ function formatOutput(result: { exitCode: number; stdout: string; stderr: string
  * Mock mode: no ANTHROPIC_API_KEY, so we DON'T call Claude (no cost). We still
  * exercise the real sandbox end-to-end so the pipeline is fully testable.
  */
-async function runMock(messages: ChatMessage[], sandbox: SandboxHandle): Promise<ChatResult> {
+async function runMock(
+  backend: SandboxBackend,
+  messages: ChatMessage[],
+  sandbox: SandboxHandle,
+): Promise<ChatResult> {
   const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
   const code = `console.log("sandbox is alive — you said:", ${JSON.stringify(lastUser)});`;
   const result = await backend.runCode(sandbox, code);
@@ -59,7 +81,11 @@ async function runMock(messages: ChatMessage[], sandbox: SandboxHandle): Promise
 }
 
 /** Real mode: let Claude drive the sandbox via the run_code tool. */
-async function runWithClaude(messages: ChatMessage[], sandbox: SandboxHandle): Promise<ChatResult> {
+async function runWithClaude(
+  backend: SandboxBackend,
+  messages: ChatMessage[],
+  sandbox: SandboxHandle,
+): Promise<ChatResult> {
   const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY from the environment
   const toolRuns: ToolRun[] = [];
 
@@ -100,9 +126,12 @@ async function runWithClaude(messages: ChatMessage[], sandbox: SandboxHandle): P
  * then always destroys the sandbox.
  */
 export async function runChat(messages: ChatMessage[]): Promise<ChatResult> {
+  const backend = await getBackend();
   const sandbox = await backend.createSandbox();
   try {
-    return hasApiKey() ? await runWithClaude(messages, sandbox) : await runMock(messages, sandbox);
+    return hasApiKey()
+      ? await runWithClaude(backend, messages, sandbox)
+      : await runMock(backend, messages, sandbox);
   } finally {
     await backend.destroySandbox(sandbox);
   }
