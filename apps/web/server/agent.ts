@@ -169,45 +169,73 @@ async function runMock(
   const file = `sandbox-runs/run-${stamp}.md`;
   const runs: ToolRun[] = [];
 
-  // Helper: run a git command in the repo, record it, throw on failure.
-  const git = async (args: string[], cwd = "work") => {
-    const out = await backend.exec(sandbox, "git", args, { cwd });
-    runs.push({ tool: "run_command", summary: `$ git ${args.join(" ")}`, output: formatOutput(out) });
-    if (out.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed:\n${out.stderr}`);
+  // Record every step (incl. exit/stdout/stderr) so a failure is fully visible
+  // in the UI instead of a bare 500. `run` never throws; `mustPass` throws with
+  // the FULL output (git writes "nothing to commit" to stdout, not stderr).
+  const run = async (cmd: string, args: string[], cwd?: string) => {
+    const out = await backend.exec(sandbox, cmd, args, cwd ? { cwd } : {});
+    runs.push({
+      tool: "run_command",
+      summary: `$ ${cmd} ${args.join(" ")}${cwd ? `   (in ${cwd})` : ""}`,
+      output: formatOutput(out),
+    });
+    return out;
+  };
+  const mustPass = async (cmd: string, args: string[], cwd?: string) => {
+    const out = await run(cmd, args, cwd);
+    if (out.exitCode !== 0) {
+      throw new Error(
+        `${cmd} ${args.join(" ")} exited ${out.exitCode}\nstdout: ${out.stdout}\nstderr: ${out.stderr}`,
+      );
+    }
     return out;
   };
 
-  // 1. Clone (auth already set up by setupGit).
-  await git(["clone", `https://github.com/${owner}/${repo}`, "work"], ".");
-  // 2. New branch.
-  await git(["checkout", "-b", branch]);
-  // 3. Scripted change: a dummy file with a human-readable timestamp.
-  const content = `# Sandbox run\n\nCreated at: ${new Date().toString()}\nBranch: ${branch}\n`;
-  await backend.writeFile(sandbox, `work/${file}`, content);
-  runs.push({ tool: "write_file", summary: `wrote ${file}`, output: content });
-  // 4. Commit + push.
-  await git(["add", "-A"]);
-  await git(["commit", "-m", `Sandbox run ${stamp}`]);
-  await git(["push", "-u", "origin", branch]);
-  // 5. Open the PR via the server-held token.
-  const base = await getDefaultBranch(gh.token, owner, repo);
-  const url = await openPullRequest({
-    token: gh.token,
-    owner,
-    repo,
-    head: branch,
-    base,
-    title: `Sandbox run ${stamp}`,
-    body: `Automated mock run — added \`${file}\`. No Claude involved; this exercises the real clone→push→PR path.`,
-  });
-  runs.push({ tool: "open_pull_request", summary: `opened PR: ${url}`, output: url });
+  try {
+    // Diagnostics: prove identity/creds are in place before we rely on them.
+    await run("sh", ["-c", "echo HOME=$HOME; whoami; git config --list --show-origin 2>&1 | head -30"]);
 
-  return {
-    reply:
-      `🔌 Mock mode (no Claude) — but this was a REAL run against ${owner}/${repo}: cloned, ` +
-      `created ${file}, pushed branch ${branch}, and opened a pull request:\n\n${url}`,
-    toolRuns: runs,
-  };
+    await mustPass("git", ["clone", `https://github.com/${owner}/${repo}`, "work"], ".");
+    await mustPass("git", ["checkout", "-b", branch], "work");
+
+    const content = `# Sandbox run\n\nCreated at: ${new Date().toString()}\nBranch: ${branch}\n`;
+    await backend.writeFile(sandbox, `work/${file}`, content);
+    runs.push({ tool: "write_file", summary: `wrote ${file}`, output: content });
+
+    // Did the file actually land, and what does git see?
+    await run("ls", ["-la", "sandbox-runs"], "work");
+    await run("git", ["status", "--porcelain"], "work");
+
+    await mustPass("git", ["add", "-A"], "work");
+    await mustPass("git", ["commit", "-m", `Sandbox run ${stamp}`], "work");
+    await mustPass("git", ["push", "-u", "origin", branch], "work");
+
+    const base = await getDefaultBranch(gh.token, owner, repo);
+    const url = await openPullRequest({
+      token: gh.token,
+      owner,
+      repo,
+      head: branch,
+      base,
+      title: `Sandbox run ${stamp}`,
+      body: `Automated mock run — added \`${file}\`. No Claude involved; this exercises the real clone→push→PR path.`,
+    });
+    runs.push({ tool: "open_pull_request", summary: `opened PR: ${url}`, output: url });
+
+    return {
+      reply:
+        `🔌 Mock mode (no Claude) — but this was a REAL run against ${owner}/${repo}: cloned, ` +
+        `created ${file}, pushed branch ${branch}, and opened a pull request:\n\n${url}`,
+      toolRuns: runs,
+    };
+  } catch (err) {
+    return {
+      reply:
+        `⚠️ Mock run against ${owner}/${repo} failed: ${(err as Error).message}\n\n` +
+        `The steps above show exactly where — check the last one.`,
+      toolRuns: runs,
+    };
+  }
 }
 
 /** Real mode: let Claude drive the sandbox to clone, edit, and open a PR. */
