@@ -21,3 +21,24 @@ export function resolveDockerSocketPath(): string {
 
 /** The image every sandbox is created from (built in Milestone 2). */
 export const SANDBOX_IMAGE = "ai-sandbox:0.2";
+
+/**
+ * GitHub identity the coding agent commits and opens PRs as.
+ * The token is read once, server-side, and never exposed to the model or UI.
+ */
+export interface GitHubConfig {
+  token: string;
+  authorName: string;
+  authorEmail: string;
+}
+
+/** Returns null when no token is configured (agent then works read-only / can't push). */
+export function getGitHubConfig(): GitHubConfig | null {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) return null;
+  return {
+    token,
+    authorName: process.env.GIT_AUTHOR_NAME || "AI Sandbox Bot",
+    authorEmail: process.env.GIT_AUTHOR_EMAIL || "ai-sandbox-bot@users.noreply.github.com",
+  };
+}

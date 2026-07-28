@@ -1,5 +1,10 @@
 import { Sandbox } from "@vercel/sandbox";
-import type { ExecResult, SandboxBackend, SandboxHandle } from "./SandboxBackend.js";
+import type {
+  ExecOptions,
+  ExecResult,
+  SandboxBackend,
+  SandboxHandle,
+} from "./SandboxBackend.js";
 
 /**
  * A SandboxBackend backed by Vercel Sandbox — managed Firecracker microVMs.
@@ -14,27 +19,44 @@ export class VercelSandboxManager implements SandboxBackend {
 
   async createSandbox(): Promise<SandboxHandle> {
     const sandbox = await Sandbox.create({
-      runtime: "node24",   // Node is built in; Amazon Linux 2023 also ships python3
-      timeout: 300_000,    // 5 min max session
-      persistent: false,   // throwaway per request — no snapshot on stop
+      runtime: "node24", // Node + git are built in; Amazon Linux 2023
+      timeout: 600_000, // 10 min — a clone→edit→test→push task takes minutes
+      persistent: false, // throwaway per task — no snapshot on stop
     });
 
     this.sandboxes.set(sandbox.name, sandbox);
     return { id: sandbox.name };
   }
 
-  async runCode(handle: SandboxHandle, code: string): Promise<ExecResult> {
+  async exec(
+    handle: SandboxHandle,
+    cmd: string,
+    args: string[] = [],
+    opts: ExecOptions = {},
+  ): Promise<ExecResult> {
     const sandbox = this.get(handle);
-
-    // Paths are relative to the default working dir (/vercel/sandbox).
-    await sandbox.writeFiles([{ path: "main.js", content: Buffer.from(code) }]);
-    const result = await sandbox.runCommand({ cmd: "node", args: ["main.js"] });
+    const result = await sandbox.runCommand({
+      cmd,
+      args,
+      cwd: opts.cwd,
+      env: opts.env,
+    });
 
     return {
       stdout: await result.stdout(),
       stderr: await result.stderr(),
       exitCode: result.exitCode,
     };
+  }
+
+  async writeFile(handle: SandboxHandle, path: string, content: string): Promise<void> {
+    const sandbox = this.get(handle);
+    await sandbox.writeFiles([{ path, content: Buffer.from(content) }]);
+  }
+
+  async readFile(handle: SandboxHandle, path: string): Promise<string> {
+    const sandbox = this.get(handle);
+    return sandbox.fs.readFile(path, "utf-8");
   }
 
   async destroySandbox(handle: SandboxHandle): Promise<void> {

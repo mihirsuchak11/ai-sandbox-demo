@@ -15,8 +15,8 @@ async function main(): Promise<void> {
     const pipInstall = await manager.installPythonPackages(sandbox, ["cowsay"]);
     console.log(`   pip exitCode: ${pipInstall.exitCode}`);
 
-    const pyRun = await manager.exec(sandbox, [
-      "python3", "-c", "import cowsay; cowsay.cow('hello from a pip package')",
+    const pyRun = await manager.exec(sandbox, "python3", [
+      "-c", "import cowsay; cowsay.cow('hello from a pip package')",
     ]);
     console.log("   Python output:\n" + pyRun.stdout);
 
@@ -25,8 +25,8 @@ async function main(): Promise<void> {
     const npmInstall = await manager.installNodePackages(sandbox, ["lodash"]);
     console.log(`   npm exitCode: ${npmInstall.exitCode}`);
 
-    const nodeRun = await manager.exec(sandbox, [
-      "node", "-e", "console.log(require('lodash').capitalize('hello from npm'))",
+    const nodeRun = await manager.exec(sandbox, "node", [
+      "-e", "console.log(require('lodash').capitalize('hello from npm'))",
     ]);
     console.log("   Node output: " + nodeRun.stdout.trim());
   } finally {

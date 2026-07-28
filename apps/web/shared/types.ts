@@ -6,9 +6,15 @@ export interface ChatMessage {
   content: string;
 }
 
+/**
+ * One tool call the agent made inside the sandbox, shown in the UI.
+ * `tool` is the tool name (run_command, write_file, read_file,
+ * open_pull_request); `summary` is a one-line human label (e.g. the shell
+ * command or "wrote src/foo.ts"); `output` is the result text.
+ */
 export interface ToolRun {
-  language: "node";
-  code: string;
+  tool: string;
+  summary: string;
   output: string;
 }
 

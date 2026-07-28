@@ -56,13 +56,8 @@ export default function App() {
                       {m.toolRuns?.map((run, j) => (
                         <div key={j}>
                           <Marker variant="separator">
-                            <MarkerContent>ran {run.language} in sandbox</MarkerContent>
+                            <MarkerContent>{run.summary}</MarkerContent>
                           </Marker>
-                          <Bubble variant="outline">
-                            <BubbleContent>
-                              <pre>{run.code}</pre>
-                            </BubbleContent>
-                          </Bubble>
                           <Bubble variant="muted">
                             <BubbleContent>
                               <pre>{run.output}</pre>
@@ -109,7 +104,7 @@ export default function App() {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask Claude to compute something…"
+          placeholder="Ask Claude to clone a repo, make a change, and open a PR…"
           disabled={loading}
           className="flex-1 rounded-md border px-3 py-2 text-sm"
         />

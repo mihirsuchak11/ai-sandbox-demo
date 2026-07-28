@@ -3,11 +3,24 @@ import path from "node:path";
 import Docker from "dockerode";
 import type { Container } from "dockerode";
 import { PassThrough } from "node:stream";
-import type { SandboxBackend, SandboxHandle, ExecResult } from "../sandbox/SandboxBackend.js";
+import type {
+  SandboxBackend,
+  SandboxHandle,
+  ExecResult,
+  ExecOptions,
+} from "../sandbox/SandboxBackend.js";
 
 // Single source of truth for these types now lives in SandboxBackend.
 // Re-export so existing imports from this module keep working.
 export type { SandboxHandle, ExecResult };
+
+/** The container's default working directory (set in the Dockerfile). */
+const WORKDIR = "/workspace";
+
+/** Resolve a possibly-relative path against the container workdir. */
+function absolutize(p: string): string {
+  return p.startsWith("/") ? p : `${WORKDIR}/${p.replace(/^\.\//, "")}`;
+}
 
 /**
  * Manages the lifecycle of sandbox containers.
@@ -20,12 +33,6 @@ export class DockerManager implements SandboxBackend {
     private readonly image: string,
   ) {}
 
-  /** Write `code` to /workspace and run it with Node (satisfies SandboxBackend). */
-  async runCode(handle: SandboxHandle, code: string): Promise<ExecResult> {
-    const file = "/workspace/main.js";
-    await this.writeFile(handle, file, code);
-    return this.exec(handle, ["node", file]);
-  }
     /**
    * Create a fresh, idling sandbox and start it.
    * Runs `sleep infinity` so the container stays alive, ready for exec.
@@ -68,14 +75,21 @@ export class DockerManager implements SandboxBackend {
     content: string | Buffer,
   ): Promise<void> {
     const container = this.docker.getContainer(handle.id);
+    const abs = absolutize(filePath);
+    const dir = path.dirname(abs);
+
+    // putArchive unpacks INTO `dir`, which must already exist — so create it
+    // first. Without this, writing into a new folder (e.g. a fresh subdir in a
+    // cloned repo) fails with a 404.
+    await this.exec(handle, "mkdir", ["-p", dir]);
 
     // Build a one-file tar archive in memory.
     const pack = tar.pack();
-    pack.entry({ name: path.basename(filePath) }, content);
+    pack.entry({ name: path.basename(abs) }, content);
     pack.finalize();
 
     // Docker unpacks the archive INTO the directory we name here.
-    await container.putArchive(pack, { path: path.dirname(filePath) });
+    await container.putArchive(pack, { path: dir });
   }
   /**
    * Read a file out of the sandbox. Docker hands us a tar archive
@@ -83,7 +97,7 @@ export class DockerManager implements SandboxBackend {
    */
   async readFile(handle: SandboxHandle, filePath: string): Promise<string> {
     const container = this.docker.getContainer(handle.id);
-    const archiveStream = await container.getArchive({ path: filePath });
+    const archiveStream = await container.getArchive({ path: absolutize(filePath) });
 
     return new Promise<string>((resolve, reject) => {
       const extract = tar.extract();
@@ -102,16 +116,26 @@ export class DockerManager implements SandboxBackend {
   }
 /**
    * Run a command inside an existing sandbox and capture its output.
-   * @param command argv array, e.g. ["python3", "/workspace/app.py"]
+   * @param cmd  the program, e.g. "git"
+   * @param args argv, e.g. ["clone", url, "work"]
    */
-  async exec(handle: SandboxHandle, command: string[]): Promise<ExecResult> {
+  async exec(
+    handle: SandboxHandle,
+    cmd: string,
+    args: string[] = [],
+    opts: ExecOptions = {},
+  ): Promise<ExecResult> {
     const container = this.docker.getContainer(handle.id);
 
     const exec = await container.exec({
-      Cmd: command,
+      Cmd: [cmd, ...args],
       AttachStdout: true,
       AttachStderr: true,
       Tty: false, // MUST be false so stdout/stderr stay separable
+      WorkingDir: opts.cwd ? absolutize(opts.cwd) : WORKDIR,
+      Env: opts.env
+        ? Object.entries(opts.env).map(([k, v]) => `${k}=${v}`)
+        : undefined,
     });
 
     const stream = await exec.start({ hijack: true, stdin: false });
@@ -143,7 +167,7 @@ export class DockerManager implements SandboxBackend {
     handle: SandboxHandle,
     packages: string[],
   ): Promise<ExecResult> {
-    return this.exec(handle, ["npm", "install", ...packages]);
+    return this.exec(handle, "npm", ["install", ...packages]);
   }
 
   /** Install Python packages into the sandbox's venv. */
@@ -151,6 +175,6 @@ export class DockerManager implements SandboxBackend {
     handle: SandboxHandle,
     packages: string[],
   ): Promise<ExecResult> {
-    return this.exec(handle, ["pip", "install", ...packages]);
+    return this.exec(handle, "pip", ["install", ...packages]);
   }
 }
