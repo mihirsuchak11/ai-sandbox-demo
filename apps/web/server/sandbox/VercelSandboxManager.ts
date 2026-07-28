@@ -51,6 +51,12 @@ export class VercelSandboxManager implements SandboxBackend {
 
   async writeFile(handle: SandboxHandle, path: string, content: string): Promise<void> {
     const sandbox = this.get(handle);
+    // Ensure the parent dir exists — writing into a new folder (e.g. a fresh
+    // subdir of a cloned repo) otherwise fails.
+    const slash = path.lastIndexOf("/");
+    if (slash > 0) {
+      await sandbox.runCommand({ cmd: "mkdir", args: ["-p", path.slice(0, slash)] });
+    }
     await sandbox.writeFiles([{ path, content: Buffer.from(content) }]);
   }
 

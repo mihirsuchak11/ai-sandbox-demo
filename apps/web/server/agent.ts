@@ -94,12 +94,28 @@ async function setupGit(
   sandbox: SandboxHandle,
   gh: GitHubConfig,
 ): Promise<void> {
-  const credsPath = "/tmp/.git-credentials";
-  await backend.writeFile(sandbox, credsPath, `https://x-access-token:${gh.token}@github.com\n`);
-  await backend.exec(sandbox, "git", ["config", "--global", "credential.helper", `store --file=${credsPath}`]);
-  await backend.exec(sandbox, "git", ["config", "--global", "user.name", gh.authorName]);
-  await backend.exec(sandbox, "git", ["config", "--global", "user.email", gh.authorEmail]);
-  await backend.exec(sandbox, "git", ["config", "--global", "--add", "safe.directory", "*"]);
+  // Find the real HOME so config lands where EVERY later git command reads it.
+  // `git config --global` relies on $HOME being set consistently across each
+  // microVM command — which held on Docker but not on Vercel, leaving commits
+  // with no identity. Writing the files directly is backend-agnostic.
+  const homeRes = await backend.exec(sandbox, "sh", ["-c", "echo -n $HOME"]);
+  const home = homeRes.stdout.trim() || "/root";
+
+  // Credentials file — the token is written by us (the trusted server) and never
+  // appears in any tool argument, tool output, or UI. `helper = store` reads it.
+  await backend.writeFile(
+    sandbox,
+    `${home}/.git-credentials`,
+    `https://x-access-token:${gh.token}@github.com\n`,
+  );
+
+  await backend.writeFile(
+    sandbox,
+    `${home}/.gitconfig`,
+    `[user]\n\tname = ${gh.authorName}\n\temail = ${gh.authorEmail}\n` +
+      `[credential]\n\thelper = store\n` +
+      `[safe]\n\tdirectory = *\n`,
+  );
 }
 
 /**
