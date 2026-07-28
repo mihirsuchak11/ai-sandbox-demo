@@ -1,6 +1,6 @@
 import Docker from "dockerode";
-import { resolveDockerSocketPath, SANDBOX_IMAGE } from "./config.js";
-import { DockerManager } from "./docker/DockerManager.js";
+import { resolveDockerSocketPath, SANDBOX_IMAGE } from "./config";
+import { DockerManager } from "./docker/DockerManager";
 
 async function main(): Promise<void> {
   const docker = new Docker({ socketPath: resolveDockerSocketPath() });

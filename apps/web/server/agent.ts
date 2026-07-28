@@ -2,10 +2,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import Docker from "dockerode";
-import { resolveDockerSocketPath, SANDBOX_IMAGE } from "./config.js";
-import { DockerManager } from "./docker/DockerManager.js";
-import { VercelSandboxManager } from "./sandbox/VercelSandboxManager.js";
-import type { SandboxBackend, SandboxHandle } from "./sandbox/SandboxBackend.js";
+import { resolveDockerSocketPath, SANDBOX_IMAGE } from "./config";
+import { DockerManager } from "./docker/DockerManager";
+import { VercelSandboxManager } from "./sandbox/VercelSandboxManager";
+import type { SandboxBackend, SandboxHandle } from "./sandbox/SandboxBackend";
+import type { ChatMessage, ToolRun, ChatResult } from "../shared/types";
 
 // Choose the sandbox backend once, from the environment.
 // SANDBOX_BACKEND=vercel  -> managed Firecracker microVMs on Vercel
@@ -16,24 +17,6 @@ const backend: SandboxBackend =
     : new DockerManager(new Docker({ socketPath: resolveDockerSocketPath() }), SANDBOX_IMAGE);
 
 console.log(`🧰 Sandbox backend: ${process.env.SANDBOX_BACKEND === "vercel" ? "vercel" : "docker"}`);
-
-/** One chat turn as sent from the browser. */
-export interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-}
-
-/** A record of one piece of code run in the sandbox (for the UI to show). */
-export interface ToolRun {
-  language: "node";
-  code: string;
-  output: string;
-}
-
-export interface ChatResult {
-  reply: string;
-  toolRuns: ToolRun[];
-}
 
 const SYSTEM_PROMPT = `You are an AI code interpreter with access to a secure sandbox.
 
