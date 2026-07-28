@@ -1,8 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
-import type { SandboxBackend, SandboxHandle } from "./sandbox/SandboxBackend";
-import type { ChatMessage, ToolRun, ChatResult } from "../shared/types";
+import type { SandboxBackend, SandboxHandle } from "./sandbox/SandboxBackend.js";
+import type { ChatMessage, ToolRun, ChatResult } from "../shared/types.js";
 
 /**
  * Lazily build the sandbox backend on first use — NOT at module load.
@@ -18,7 +18,7 @@ function getBackend(): Promise<SandboxBackend> {
   if (!backendPromise) {
     backendPromise = (async () => {
       if (process.env.SANDBOX_BACKEND === "vercel") {
-        const { VercelSandboxManager } = await import("./sandbox/VercelSandboxManager");
+        const { VercelSandboxManager } = await import("./sandbox/VercelSandboxManager.js");
         console.log("🧰 Sandbox backend: vercel");
         return new VercelSandboxManager();
       }
@@ -26,8 +26,8 @@ function getBackend(): Promise<SandboxBackend> {
       const [{ default: Docker }, { DockerManager }, { resolveDockerSocketPath, SANDBOX_IMAGE }] =
         await Promise.all([
           import("dockerode"),
-          import("./docker/DockerManager"),
-          import("./config"),
+          import("./docker/DockerManager.js"),
+          import("./config.js"),
         ]);
       console.log("🧰 Sandbox backend: docker");
       return new DockerManager(new Docker({ socketPath: resolveDockerSocketPath() }), SANDBOX_IMAGE);

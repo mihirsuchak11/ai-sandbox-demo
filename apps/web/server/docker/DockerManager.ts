@@ -3,7 +3,7 @@ import path from "node:path";
 import Docker from "dockerode";
 import type { Container } from "dockerode";
 import { PassThrough } from "node:stream";
-import type { SandboxBackend, SandboxHandle, ExecResult } from "../sandbox/SandboxBackend";
+import type { SandboxBackend, SandboxHandle, ExecResult } from "../sandbox/SandboxBackend.js";
 
 // Single source of truth for these types now lives in SandboxBackend.
 // Re-export so existing imports from this module keep working.

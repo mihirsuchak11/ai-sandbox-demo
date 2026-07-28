@@ -1,5 +1,5 @@
-import { runChat } from "../server/agent";
-import type { ChatMessage } from "../shared/types";
+import { runChat } from "../server/agent.js";
+import type { ChatMessage } from "../shared/types.js";
 
 // Vercel Function (Web signature). Maps to POST /api/chat.
 // On Vercel, @vercel/sandbox authenticates automatically via OIDC — no token

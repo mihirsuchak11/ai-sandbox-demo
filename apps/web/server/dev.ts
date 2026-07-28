@@ -1,7 +1,7 @@
-import "./env"; // must run BEFORE ./agent (loads .env + .env.local into process.env)
+import "./env.js"; // must run BEFORE ./agent (loads .env + .env.local into process.env)
 import express from "express";
-import { runChat } from "./agent";
-import type { ChatMessage } from "../shared/types";
+import { runChat } from "./agent.js";
+import type { ChatMessage } from "../shared/types.js";
 
 const app = express();
 app.use(express.json());

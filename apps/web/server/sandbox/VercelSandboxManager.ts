@@ -1,5 +1,5 @@
 import { Sandbox } from "@vercel/sandbox";
-import type { ExecResult, SandboxBackend, SandboxHandle } from "./SandboxBackend";
+import type { ExecResult, SandboxBackend, SandboxHandle } from "./SandboxBackend.js";
 
 /**
  * A SandboxBackend backed by Vercel Sandbox — managed Firecracker microVMs.
