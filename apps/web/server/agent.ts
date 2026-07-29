@@ -2,7 +2,16 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import type { SandboxBackend, SandboxHandle } from "./sandbox/SandboxBackend.js";
-import type { ChatMessage, ToolRun, ChatResult } from "../shared/types.js";
+import type { ChatMessage, ToolRun, ChatResult, ProgressEvent } from "../shared/types.js";
+
+/**
+ * Callback the transport passes in to receive live progress. The agent calls
+ * it with a `status` event at each phase and a `tool` event after every tool
+ * call, so the UI can render steps as they happen. A no-op by default keeps
+ * the non-streaming callers working unchanged.
+ */
+export type OnEvent = (event: ProgressEvent) => void;
+const noop: OnEvent = () => {};
 import { getGitHubConfig, type GitHubConfig } from "./config.js";
 import { getDefaultBranch, openPullRequest } from "./github.js";
 
@@ -47,6 +56,10 @@ Tools:
   "cwd" (relative to the sandbox root) to run inside the checked-out repo.
 - write_file / read_file: create or inspect files by path.
 - open_pull_request: open the PR once your branch is pushed.
+- GitHub tools (via the "github" MCP server, when available): use these to
+  UNDERSTAND the repo before you change it — read issues, browse files, search
+  code, check the default branch. Use them for context/reading; still make code
+  changes in the sandbox (write_file / run_command) and push with git.
 
 Standard workflow:
 1. Clone into a folder named "work":
@@ -147,6 +160,7 @@ async function runMock(
   messages: ChatMessage[],
   sandbox: SandboxHandle,
   gh: GitHubConfig | null,
+  onEvent: OnEvent = noop,
 ): Promise<ChatResult> {
   const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
   const target = parseRepo(lastUser);
@@ -154,6 +168,10 @@ async function runMock(
   // No repo named in chat, or no token → minimal liveness check.
   if (!target || !gh) {
     const result = await backend.exec(sandbox, "git", ["--version"]);
+    onEvent({
+      type: "tool",
+      run: { tool: "run_command", summary: "$ git --version", output: formatOutput(result) },
+    });
     return {
       reply:
         "🔌 Mock mode — no ANTHROPIC_API_KEY, so Claude was NOT called. Name a repo in your " +
@@ -174,11 +192,13 @@ async function runMock(
   // the FULL output (git writes "nothing to commit" to stdout, not stderr).
   const run = async (cmd: string, args: string[], cwd?: string) => {
     const out = await backend.exec(sandbox, cmd, args, cwd ? { cwd } : {});
-    runs.push({
+    const runRecord: ToolRun = {
       tool: "run_command",
       summary: `$ ${cmd} ${args.join(" ")}${cwd ? `   (in ${cwd})` : ""}`,
       output: formatOutput(out),
-    });
+    };
+    runs.push(runRecord);
+    onEvent({ type: "tool", run: runRecord });
     return out;
   };
   const mustPass = async (cmd: string, args: string[], cwd?: string) => {
@@ -204,7 +224,9 @@ async function runMock(
 
     const content = `# Sandbox run\n\nCreated at: ${new Date().toString()}\nBranch: ${branch}\n`;
     await backend.writeFile(sandbox, `${repoAbs}/${file}`, content);
-    runs.push({ tool: "write_file", summary: `wrote ${file}`, output: content });
+    const writeRun: ToolRun = { tool: "write_file", summary: `wrote ${file}`, output: content };
+    runs.push(writeRun);
+    onEvent({ type: "tool", run: writeRun });
 
     // Confirm the file landed where git will see it.
     await run("git", ["status", "--porcelain"], repoAbs);
@@ -223,7 +245,10 @@ async function runMock(
       title: `Sandbox run ${stamp}`,
       body: `Automated mock run — added \`${file}\`. No Claude involved; this exercises the real clone→push→PR path.`,
     });
-    runs.push({ tool: "open_pull_request", summary: `opened PR: ${url}`, output: url });
+    const prRun: ToolRun = { tool: "open_pull_request", summary: `opened PR: ${url}`, output: url };
+    runs.push(prRun);
+    onEvent({ type: "tool", run: prRun });
+    onEvent({ type: "status", message: `🔗 Pull request opened: ${url}` });
 
     return {
       reply:
@@ -247,9 +272,17 @@ async function runWithClaude(
   messages: ChatMessage[],
   sandbox: SandboxHandle,
   gh: GitHubConfig | null,
+  onEvent: OnEvent = noop,
 ): Promise<ChatResult> {
   const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY from the environment
   const toolRuns: ToolRun[] = [];
+
+  // Record a tool call once: keep it for the final result AND stream it to the
+  // UI so the step shows up the moment Claude makes it, not at the very end.
+  const record = (run: ToolRun) => {
+    toolRuns.push(run);
+    onEvent({ type: "tool", run });
+  };
 
   const runCommand = betaZodTool({
     name: "run_command",
@@ -265,7 +298,7 @@ async function runWithClaude(
     run: async ({ cmd, args, cwd }) => {
       const output = formatOutput(await backend.exec(sandbox, cmd, args, { cwd }));
       const label = `$ ${[cmd, ...args].join(" ")}${cwd ? `   (in ${cwd})` : ""}`;
-      toolRuns.push({ tool: "run_command", summary: label, output });
+      record({ tool: "run_command", summary: label, output });
       return output;
     },
   });
@@ -280,7 +313,7 @@ async function runWithClaude(
     run: async ({ path, content }) => {
       await backend.writeFile(sandbox, path, content);
       const output = `wrote ${content.length} bytes to ${path}`;
-      toolRuns.push({ tool: "write_file", summary: `wrote ${path}`, output });
+      record({ tool: "write_file", summary: `wrote ${path}`, output });
       return output;
     },
   });
@@ -294,11 +327,11 @@ async function runWithClaude(
     run: async ({ path }) => {
       try {
         const content = await backend.readFile(sandbox, path);
-        toolRuns.push({ tool: "read_file", summary: `read ${path}`, output: content });
+        record({ tool: "read_file", summary: `read ${path}`, output: content });
         return content;
       } catch (err) {
         const msg = `error reading ${path}: ${(err as Error).message}`;
-        toolRuns.push({ tool: "read_file", summary: `read ${path} (failed)`, output: msg });
+        record({ tool: "read_file", summary: `read ${path} (failed)`, output: msg });
         return msg;
       }
     },
@@ -320,7 +353,7 @@ async function runWithClaude(
     run: async ({ owner, repo, head, title, body, base }) => {
       if (!gh) {
         const msg = "Cannot open a PR: no GITHUB_TOKEN configured on the server.";
-        toolRuns.push({ tool: "open_pull_request", summary: "open PR (no token)", output: msg });
+        record({ tool: "open_pull_request", summary: "open PR (no token)", output: msg });
         return msg;
       }
       try {
@@ -334,21 +367,58 @@ async function runWithClaude(
           title,
           body,
         });
-        toolRuns.push({ tool: "open_pull_request", summary: `opened PR: ${url}`, output: url });
+        record({ tool: "open_pull_request", summary: `opened PR: ${url}`, output: url });
+        // Surface the PR link in the chat the moment it exists, instead of
+        // waiting for the model's final wrap-up message.
+        onEvent({ type: "status", message: `🔗 Pull request opened: ${url}` });
         return `Pull request opened: ${url}`;
       } catch (err) {
         const msg = `Failed to open PR: ${(err as Error).message}`;
-        toolRuns.push({ tool: "open_pull_request", summary: "open PR (failed)", output: msg });
+        record({ tool: "open_pull_request", summary: "open PR (failed)", output: msg });
         return msg;
       }
     },
   });
 
+  // When a GitHub token is configured, connect the official GitHub MCP server
+  // so the model gets first-class GitHub tools (read issues, browse/search
+  // files, inspect branches) for understanding the repo. Auth is handled
+  // server-side by the Anthropic MCP connector — the token is passed here and
+  // never reaches the model or the sandbox. The connector needs its own beta.
+  const github = gh
+    ? {
+        mcp_servers: [
+          {
+            type: "url" as const,
+            name: "github",
+            url: "https://api.githubcopilot.com/mcp/",
+            authorization_token: gh.token,
+          },
+        ],
+        // `mcp_toolset` isn't a runnable tool (no run fn) — it tells the model
+        // the "github" server's tools are available. Cast past the toolRunner's
+        // runnable-tool typing; the SDK accepts it as a passthrough tool entry.
+        tools: [{ type: "mcp_toolset", mcp_server_name: "github" }],
+        betas: ["mcp-client-2025-11-20"],
+      }
+    : null;
+
   const finalMessage = await anthropic.beta.messages.toolRunner({
-    model: "claude-opus-4-8",
+    // Cheapest model — quality isn't a priority for this tool right now.
+    model: "claude-haiku-4-5",
     max_tokens: 16000,
+    // Prompt caching: this is an agentic tool loop, so every iteration resends
+    // the full prefix (system + tools + all prior messages). Top-level
+    // cache_control auto-places an ephemeral breakpoint on the last cacheable
+    // block of each request, so the stable prefix and the accumulating history
+    // are read from cache (~0.1x input cost) instead of reprocessed each turn.
+    // Note: Haiku 4.5's minimum cacheable prefix is 4096 tokens — short early
+    // turns silently won't cache (usage.cache_read_input_tokens stays 0), but
+    // the history quickly crosses that threshold in a multi-tool run.
+    cache_control: { type: "ephemeral" },
     system: SYSTEM_PROMPT,
-    tools: [runCommand, writeFile, readFile, openPr],
+    tools: [runCommand, writeFile, readFile, openPr, ...(github?.tools ?? [])] as any,
+    ...(github ? { mcp_servers: github.mcp_servers, betas: github.betas } : {}),
     messages,
   });
 
@@ -364,15 +434,24 @@ async function runWithClaude(
  * Run one task. Creates a fresh sandbox that PERSISTS across every tool call in
  * the task (clone → edit → test → push → PR), then always destroys it.
  */
-export async function runChat(messages: ChatMessage[]): Promise<ChatResult> {
+export async function runChat(messages: ChatMessage[], onEvent: OnEvent = noop): Promise<ChatResult> {
   const backend = await getBackend();
   const gh = getGitHubConfig();
+
+  onEvent({ type: "status", message: "Creating a fresh sandbox…" });
   const sandbox = await backend.createSandbox();
   try {
-    if (gh) await setupGit(backend, sandbox, gh);
+    if (gh) {
+      onEvent({ type: "status", message: "Configuring git credentials…" });
+      await setupGit(backend, sandbox, gh);
+    }
+    onEvent({
+      type: "status",
+      message: hasApiKey() ? "Claude is working in the sandbox…" : "Running mock pipeline…",
+    });
     return hasApiKey()
-      ? await runWithClaude(backend, messages, sandbox, gh)
-      : await runMock(backend, messages, sandbox, gh);
+      ? await runWithClaude(backend, messages, sandbox, gh, onEvent)
+      : await runMock(backend, messages, sandbox, gh, onEvent);
   } finally {
     await backend.destroySandbox(sandbox);
   }

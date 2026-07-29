@@ -23,6 +23,24 @@ export interface ChatResult {
   toolRuns: ToolRun[];
 }
 
+/**
+ * A single progress event streamed to the UI while a task runs, so the user
+ * sees each step live instead of waiting for the whole pipeline to finish.
+ *
+ * - `status`: a phase label with no tool output ("Creating sandbox…").
+ * - `tool`:   one tool call the agent just made (clone, write_file, push, …).
+ * - `done`:   the task finished; carries the final reply + full tool list.
+ * - `error`:  the task failed; `error` is the message to show.
+ *
+ * `status` and `tool` are emitted by the agent as work happens; `done` and
+ * `error` are emitted once by the transport when the task settles.
+ */
+export type ProgressEvent =
+  | { type: "status"; message: string }
+  | { type: "tool"; run: ToolRun }
+  | { type: "done"; reply: string; toolRuns: ToolRun[] }
+  | { type: "error"; error: string };
+
 /** A message held in the UI (may carry the code the assistant ran). */
 export interface UiMessage extends ChatMessage {
   toolRuns?: ToolRun[];

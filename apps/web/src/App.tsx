@@ -11,13 +11,17 @@ import { Message, MessageContent } from "@/components/ui/message";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Marker, MarkerContent } from "@/components/ui/marker";
 import { Button } from "@/components/ui/button";
-import { sendChat, type UiMessage } from "@/lib/api";
+import { sendChatStream, type UiMessage, type ToolRun } from "@/lib/api";
 
 export default function App() {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Live task state, rebuilt on each new run: the steps seen so far and the
+  // current phase label. These render immediately as SSE events arrive.
+  const [liveRuns, setLiveRuns] = useState<ToolRun[]>([]);
+  const [liveStatus, setLiveStatus] = useState<string | null>(null);
 
   async function send() {
     const text = input.trim();
@@ -28,18 +32,37 @@ export default function App() {
     setInput("");
     setError(null);
     setLoading(true);
+    setLiveRuns([]);
+    setLiveStatus(null);
 
     try {
       const wire = nextMessages.map((m) => ({ role: m.role, content: m.content }));
-      const res = await sendChat(wire);
-      setMessages([
-        ...nextMessages,
-        { role: "assistant", content: res.reply, toolRuns: res.toolRuns },
-      ]);
+      await sendChatStream(wire, (event) => {
+        switch (event.type) {
+          case "status":
+            setLiveStatus(event.message);
+            break;
+          case "tool":
+            // Append each step as it happens so the user watches progress.
+            setLiveRuns((runs) => [...runs, event.run]);
+            break;
+          case "done":
+            setMessages([
+              ...nextMessages,
+              { role: "assistant", content: event.reply, toolRuns: event.toolRuns },
+            ]);
+            break;
+          case "error":
+            setError(event.error);
+            break;
+        }
+      });
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setLoading(false);
+      setLiveRuns([]);
+      setLiveStatus(null);
     }
   }
 
@@ -75,9 +98,27 @@ export default function App() {
 
               {loading && (
                 <MessageScrollerItem scrollAnchor>
-                  <Marker>
-                    <MarkerContent>Claude is working in the sandbox…</MarkerContent>
-                  </Marker>
+                  <Message align="start">
+                    <MessageContent>
+                      {liveRuns.map((run, j) => (
+                        <div key={j}>
+                          <Marker variant="separator">
+                            <MarkerContent>{run.summary}</MarkerContent>
+                          </Marker>
+                          <Bubble variant="muted">
+                            <BubbleContent>
+                              <pre>{run.output}</pre>
+                            </BubbleContent>
+                          </Bubble>
+                        </div>
+                      ))}
+                      <Marker>
+                        <MarkerContent>
+                          {liveStatus ?? "Starting…"}
+                        </MarkerContent>
+                      </Marker>
+                    </MessageContent>
+                  </Message>
                 </MessageScrollerItem>
               )}
 
